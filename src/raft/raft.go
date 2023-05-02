@@ -449,6 +449,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.votedFor = -1
 	rf.lastActiveTime = time.Now()
 
+	//初始化随机因子
+	rand.Seed(time.Now().UnixNano())
+
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
@@ -468,7 +471,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 func (rf *Raft) electionMonitor() {
 	//检查raft是否被killed，如果没有则：
 	for !rf.killed() {
-		time.Sleep(1 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
 
 		func() {
 			rf.mu.Lock()
@@ -477,7 +480,7 @@ func (rf *Raft) electionMonitor() {
 			currentTime := time.Now()
 
 			//随机化超时时间 200ms~350ms
-			randTimeOut := time.Duration(600+rand.Int31n(100)) * time.Millisecond
+			randTimeOut := time.Duration(200+rand.Int31n(150)) * time.Millisecond
 			//距离上次接收到leader信息的时间差
 			elapses := currentTime.Sub(rf.lastActiveTime)
 
@@ -619,7 +622,7 @@ func (rf *Raft) appendEntriesMonitor() {
 
 			//100ms广播一次
 			currentTime := time.Now()
-			if currentTime.Sub(rf.lastBroadcastTime) < 550*time.Microsecond {
+			if currentTime.Sub(rf.lastBroadcastTime) < 100*time.Microsecond {
 				return
 			}
 
@@ -651,7 +654,7 @@ func (rf *Raft) appendEntriesMonitor() {
 					args.PrevLogTerm = rf.log[args.PrevLogIndex-1].Term
 				}
 				//leader与follower寻找共同的最大log entry，并将对应的index之后的log entry传递给follower以供更新
-				args.Entries = append(args.Entries, rf.log[rf.nextIndex[peerId]-1:]...)
+				args.Entries = append(args.Entries, rf.log[args.PrevLogIndex:]...)
 
 				go func(id int, args1 AppendEntriesArgs) {
 					reply := AppendEntriesReply{}
@@ -686,7 +689,7 @@ func (rf *Raft) appendEntriesMonitor() {
 							/*猜测：同步失败时，nextIndex[id]会减一，如果成功后使用：
 							rf.nextIndex[id] += len(args1.Entries)会造成少一段日志
 							必须使用下面的式子，才能完整记录nextIndex*/
-							rf.nextIndex[id] = args.PrevLogIndex + len(args1.Entries) + 1
+							rf.nextIndex[id] = args1.PrevLogIndex + len(args1.Entries) + 1
 							rf.matchIndex[id] = rf.nextIndex[id] - 1
 
 							//更新commitIndex，找Raft peers log entry的中位数
