@@ -18,11 +18,14 @@ package raft
 //
 
 import (
+	"bytes"
 	"math/rand"
 	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"../labgob"
 
 	"../labrpc"
 )
@@ -132,6 +135,18 @@ func (rf *Raft) persist() {
 	// e.Encode(rf.yyy)
 	// data := w.Bytes()
 	// rf.persister.SaveRaftState(data)
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.votedFor)
+	e.Encode(rf.log)
+	data := w.Bytes()
+	DPrintf("--------------------------------------------------")
+	DPrintf("Raft peer-%v starts persist\n", rf.me)
+	DPrintf("currentTerm-%v voteFor-%v log-%v", rf.currentTerm, rf.votedFor, rf.log)
+	rf.persister.SaveRaftState(data)
+	DPrintf("Raft peer-%v  persist ends\n", rf.me)
+	DPrintf("--------------------------------------------------")
 }
 
 //
@@ -154,6 +169,13 @@ func (rf *Raft) readPersist(data []byte) {
 	//   rf.xxx = xxx
 	//   rf.yyy = yyy
 	// }
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	d.Decode(&rf.currentTerm)
+	d.Decode(&rf.votedFor)
+	d.Decode(&rf.log)
 }
 
 //
@@ -289,6 +311,9 @@ type AppendEntriesArgs struct {
 type AppendEntriesReply struct {
 	Term    int  //最新的term（currentTerm），以供leader更新自身的Term
 	Success bool //如果follower包含与PrevLogIndex和PrevLogTerm匹配的条目，则为true
+
+	ConflictTerm  int //follower中与leader冲突的log对应的任期号，如果在对应位置没有log，则返回-1
+	ConflictIndex int //follower中，对应任期号为ConflictTerm的第一条log条目的索引号
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -307,6 +332,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	reply.Term = rf.currentTerm
 	reply.Success = false
+	reply.ConflictIndex = -1
+	reply.ConflictTerm = -1
 	if args.Term < rf.currentTerm {
 		return
 	}
@@ -326,10 +353,19 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	//如果本地的日志长度少于leader的前一个日志index，说明本地缺少了之前的日志
 	if len(rf.log) < args.PrevLogIndex {
+		reply.ConflictIndex = len(rf.log)
 		return
 	}
 	//如果本地日志长度等于leader的前一个日志index，但任期不同
 	if args.PrevLogIndex > 0 && rf.log[args.PrevLogIndex-1].Term != args.PrevLogTerm {
+		reply.ConflictTerm = rf.log[args.PrevLogIndex-1].Term
+		//从头查找冲突term的第一个位置，可以从尾查找吧？
+		for index := 1; index <= args.PrevLogIndex; index++ {
+			if rf.log[index-1].Term == reply.ConflictTerm {
+				reply.ConflictIndex = index
+				break
+			}
+		}
 		return
 	}
 
@@ -468,7 +504,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 func (rf *Raft) electionMonitor() {
 	//检查raft是否被killed，如果没有则：
 	for !rf.killed() {
-		time.Sleep(1 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
 
 		func() {
 			rf.mu.Lock()
@@ -477,7 +513,7 @@ func (rf *Raft) electionMonitor() {
 			currentTime := time.Now()
 
 			//随机化超时时间 200ms~350ms
-			randTimeOut := time.Duration(600+rand.Int31n(100)) * time.Millisecond
+			randTimeOut := time.Duration(200+rand.Int31n(150)) * time.Millisecond
 			//距离上次接收到leader信息的时间差
 			elapses := currentTime.Sub(rf.lastActiveTime)
 
@@ -619,7 +655,7 @@ func (rf *Raft) appendEntriesMonitor() {
 
 			//100ms广播一次
 			currentTime := time.Now()
-			if currentTime.Sub(rf.lastBroadcastTime) < 550*time.Microsecond {
+			if currentTime.Sub(rf.lastBroadcastTime) < 100*time.Microsecond {
 				return
 			}
 
@@ -651,11 +687,11 @@ func (rf *Raft) appendEntriesMonitor() {
 					args.PrevLogTerm = rf.log[args.PrevLogIndex-1].Term
 				}
 				//leader与follower寻找共同的最大log entry，并将对应的index之后的log entry传递给follower以供更新
-				args.Entries = append(args.Entries, rf.log[rf.nextIndex[peerId]-1:]...)
+				args.Entries = append(args.Entries, rf.log[args.PrevLogIndex:]...)
 
-				go func(id int, args1 AppendEntriesArgs) {
+				go func(id int, args1 *AppendEntriesArgs) {
 					reply := AppendEntriesReply{}
-					if ok := rf.sendAppendEntries(id, &args1, &reply); ok {
+					if ok := rf.sendAppendEntries(id, args1, &reply); ok {
 						rf.mu.Lock()
 						defer rf.mu.Unlock()
 						defer func() {
@@ -683,10 +719,10 @@ func (rf *Raft) appendEntriesMonitor() {
 						if reply.Success {
 							//rf.nextIndex[id] += len(args1.Entries)
 							//上面的会造成out of range的错误
-							/*猜测：同步失败时，nextIndex[id]会减一，如果成功后使用：
-							rf.nextIndex[id] += len(args1.Entries)会造成少一段日志
-							必须使用下面的式子，才能完整记录nextIndex*/
-							rf.nextIndex[id] = args.PrevLogIndex + len(args1.Entries) + 1
+							/*猜测：RPC期间无锁，可能相关状态被其他RPC改变
+							因此，得根据发出RPC请求时得状态做更新
+							而不能直接对nextIndex做相对加减*/
+							rf.nextIndex[id] = args1.PrevLogIndex + len(args1.Entries) + 1
 							rf.matchIndex[id] = rf.nextIndex[id] - 1
 
 							//更新commitIndex，找Raft peers log entry的中位数
@@ -705,13 +741,30 @@ func (rf *Raft) appendEntriesMonitor() {
 								rf.commitIndex = newCommitIndex
 							}
 						} else {
-							rf.nextIndex[id] -= 1
-							if rf.nextIndex[id] < 1 {
-								rf.nextIndex[id] = 1
+							prevNextIndex := rf.nextIndex[id]
+
+							//造成冲突的位置上（prevLogIndex），follower有对应log，但term不同
+							if reply.ConflictTerm != -1 {
+								conflictTermIndex := -1 //找到leader中的第一个conflictTerm相同的索引号
+								for index := args1.PrevLogIndex; index >= 1; index-- {
+									if rf.log[index-1].Term == reply.ConflictTerm {
+										conflictTermIndex = index
+										break
+									}
+								}
+								if conflictTermIndex != -1 { //leader中存在与follower中conflictTerm相同的任期号
+									rf.nextIndex[id] = conflictTermIndex + 1
+								} else { //leader中不存在与follower中conflictTerm相同的任期号
+									rf.nextIndex[id] = reply.ConflictIndex
+								}
+							} else { //follower的prevLogIndex位置没有日志
+								rf.nextIndex[id] = reply.ConflictIndex + 1
 							}
+							DPrintf("Raft peer-%v back-off nextIndex, peer-%v prevNextIndex-%v nextIndex-%v",
+								rf.me, id, prevNextIndex, rf.nextIndex[id])
 						}
 					}
-				}(peerId, args)
+				}(peerId, &args)
 			}
 		}()
 	}
