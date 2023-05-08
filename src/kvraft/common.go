@@ -16,6 +16,8 @@ type PutAppendArgs struct {
 	// You'll have to add definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	ClientId int64 //记录哪个客户端发出的请求
+	SeqId    int64 //记录此请求的唯一id，避免重复处理此请求
 }
 
 type PutAppendReply struct {
@@ -25,6 +27,8 @@ type PutAppendReply struct {
 type GetArgs struct {
 	Key string
 	// You'll have to add definitions here.
+	ClientId int64
+	SeqId    int64
 }
 
 type GetReply struct {

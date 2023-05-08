@@ -101,7 +101,7 @@ type Raft struct {
 	lastActiveTime    time.Time //上次活跃时间（刷新时机：收到leader心跳 给其他candidate投票 请求其他节点投票）
 	lastBroadcastTime time.Time //自己是leader的话，上次广播时间
 
-	//applyCh chan ApplyMsg //向应用层提交结果的队列
+	applyCh chan ApplyMsg //向应用层提交结果的队列
 }
 
 // return currentTerm and whether this server
@@ -485,6 +485,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.votedFor = -1
 	rf.lastActiveTime = time.Now()
 
+	rf.applyCh = applyCh
+
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
@@ -495,7 +497,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	go rf.appendEntriesMonitor()
 
 	//新开一个goruntine执行applylog，进行日志提交
-	go rf.applyLogMonitor(applyCh)
+	go rf.applyLogMonitor()
 
 	return rf
 }
@@ -770,7 +772,7 @@ func (rf *Raft) appendEntriesMonitor() {
 	}
 }
 
-func (rf *Raft) applyLogMonitor(applyCh chan ApplyMsg) {
+func (rf *Raft) applyLogMonitor() {
 	for !rf.killed() {
 		time.Sleep(10 * time.Millisecond)
 
@@ -791,7 +793,7 @@ func (rf *Raft) applyLogMonitor(applyCh chan ApplyMsg) {
 		}()
 		//提交给应用层
 		for _, msg := range appliedMsgs {
-			applyCh <- msg
+			rf.applyCh <- msg
 		}
 	}
 }
