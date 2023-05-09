@@ -609,7 +609,7 @@ func (rf *Raft) electionMonitor() {
 //leader传递消息的逻辑代码
 func (rf *Raft) appendEntriesMonitor() {
 	for !rf.killed() {
-		time.Sleep(10 * time.Microsecond)
+		time.Sleep(10 * time.Millisecond)
 
 		func() {
 			rf.mu.Lock()
@@ -622,7 +622,9 @@ func (rf *Raft) appendEntriesMonitor() {
 
 			//100ms广播一次
 			currentTime := time.Now()
-			if currentTime.Sub(rf.lastBroadcastTime) < 100*time.Microsecond {
+			//如果使用100ms广播一次，当leader与follower之间出现较长的日志差异链的时候，备份时间过长
+			//无法通过TestBackup2B这个测试用例
+			if currentTime.Sub(rf.lastBroadcastTime) < 50*time.Millisecond {
 				return
 			}
 
