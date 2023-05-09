@@ -533,7 +533,7 @@ func (rf *Raft) electionMonitor() {
 //leader传递消息的逻辑代码
 func (rf *Raft) appendEntriesMonitor() {
 	for !rf.killed() {
-		time.Sleep(1 * time.Microsecond)
+		time.Sleep(1 * time.Millisecond)
 
 		func() {
 			rf.mu.Lock()
@@ -546,7 +546,7 @@ func (rf *Raft) appendEntriesMonitor() {
 
 			//100ms广播一次
 			currentTime := time.Now()
-			if currentTime.Sub(rf.lastBroadcastTime) < 100*time.Microsecond {
+			if currentTime.Sub(rf.lastBroadcastTime) < 100*time.Millisecond {
 				return
 			}
 
