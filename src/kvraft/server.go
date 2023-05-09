@@ -172,7 +172,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		}
 	}()
 
-	timer := time.NewTimer(2000 * time.Microsecond)
+	timer := time.NewTimer(2000 * time.Millisecond)
 	defer timer.Stop()
 	select {
 	case <-opCtx.committed: //如果响应成功
